@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from src.schemas.claims import ClaimCreate, DocumentVerify, InvestigationCreate, InvestigationComplete
 from src.services.claim_service import list_claims, get_claim, verify_documents, model_claim, assign_task, complete_task, adjudicate, get_clues, get_tasks
 from src.services.clue_review_service import unresolved_review_count
-from src.services.document_triage_service import TRIAGE_ROLES, latest_followup
+from src.services.document_triage_service import TRIAGE_ROLES, claim_batches, receipt_rows
 from src.utils.auth import current_user, require_roles
 from src.utils.db import get_conn
 from src.utils.audit import record
@@ -24,7 +24,7 @@ def create_claim(payload: ClaimCreate, user=Depends(require_roles("intake_agent"
         duplicate = conn.execute("SELECT id FROM claims WHERE policy_no=%s AND incident_date=%s", (payload.policy_no, payload.incident_date)).fetchone()
         if duplicate: raise HTTPException(status_code=409, detail="同一保单同一事故日期已存在案件")
         claim_no = f"CLM-{payload.incident_date.strftime('%y%m%d')}-{conn.execute('SELECT COALESCE(max(id),0)+1 AS next_id FROM claims').fetchone()['next_id']:04d}"
-        row = conn.execute("INSERT INTO claims(claim_no, policy_no, customer_name, incident_type, incident_date, loss_amount, region, claimant_phone, required_documents, verified_fraud) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *", (claim_no, payload.policy_no, payload.customer_name, payload.incident_type, payload.incident_date, payload.loss_amount, payload.region, payload.claimant_phone, json.dumps(payload.required_documents, ensure_ascii=False), payload.verified_fraud)).fetchone()
+        row = conn.execute("INSERT INTO claims(claim_no, policy_no, customer_name, incident_type, incident_date, loss_amount, region, claimant_phone, required_documents, intake_received_documents, verified_fraud) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *", (claim_no, payload.policy_no, payload.customer_name, payload.incident_type, payload.incident_date, payload.loss_amount, payload.region, payload.claimant_phone, json.dumps(payload.required_documents, ensure_ascii=False), json.dumps([], ensure_ascii=False), payload.verified_fraud)).fetchone()
     record(user["id"], "claim_created", row["id"], {"claim_no": claim_no})
     return row
 
@@ -34,12 +34,18 @@ def claim_detail(claim_id: int, user=Depends(current_user)):
     if not item: raise HTTPException(status_code=404, detail="案件不存在")
     with get_conn() as conn:
         unresolved_reviews = unresolved_review_count(conn, claim_id)
-        followup = latest_followup(conn, claim_id) if user["role"] in TRIAGE_ROLES else None
-    return {"claim": item, "clues": get_clues(claim_id), "tasks": [task for task in get_tasks() if task["claim_id"] == claim_id], "unresolved_clue_reviews": unresolved_reviews, "document_followup": followup}
+        followup = None
+        batches = []
+        receipts = []
+        if user["role"] in TRIAGE_ROLES:
+            batches = claim_batches(conn, claim_id)
+            receipts = receipt_rows(conn, claim_id)
+            followup = batches[-1] if batches else None
+    return {"claim": item, "clues": get_clues(claim_id), "tasks": [task for task in get_tasks() if task["claim_id"] == claim_id], "unresolved_clue_reviews": unresolved_reviews, "document_followup": followup, "document_followup_batches": batches, "document_receipts": receipts}
 
 @router.post("/claims/{claim_id}/verify-documents")
 def verify(claim_id: int, payload: DocumentVerify, user=Depends(require_roles("intake_agent", "risk_manager"))):
-    try: return verify_documents(claim_id, payload.received_documents, user["id"])
+    try: return verify_documents(claim_id, payload, user["id"])
     except Exception as exc: fail(exc)
 
 @router.post("/claims/{claim_id}/model")

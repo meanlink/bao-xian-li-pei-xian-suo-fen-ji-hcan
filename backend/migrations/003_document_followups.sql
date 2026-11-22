@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS document_followups (
     CHECK ((completed_by IS NULL) = (completed_at IS NULL))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS document_followups_one_open_per_claim
-    ON document_followups (claim_id) WHERE completed_at IS NULL;
+-- 唯一性约束（每个案件同时只有一条生效催件）由 004_document_receipts.sql 建立，
+-- 那里同时考虑“被撤销作废”的批次。
 CREATE INDEX IF NOT EXISTS document_followups_claim_history
     ON document_followups (claim_id, id DESC);

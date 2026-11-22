@@ -26,10 +26,10 @@ with get_conn() as conn:
         conn.execute("INSERT INTO settings(key,value) VALUES (%s,%s) ON CONFLICT(key) DO NOTHING", (key, value))
     for item in claims:
         claim_no, policy_no, customer, incident, incident_date, loss, region, phone, required, received, missing, doc_status, status, score, fraud = item
-        query = """INSERT INTO claims(claim_no,policy_no,customer_name,incident_type,incident_date,loss_amount,region,claimant_phone,required_documents,received_documents,missing_documents,documents_status,status,model_score,model_threshold,risk_level,verified_fraud)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0.62,%s,%s)
+        query = """INSERT INTO claims(claim_no,policy_no,customer_name,incident_type,incident_date,loss_amount,region,claimant_phone,required_documents,intake_received_documents,received_documents,missing_documents,documents_status,status,model_score,model_threshold,risk_level,verified_fraud)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0.62,%s,%s)
         ON CONFLICT(claim_no) DO NOTHING RETURNING id"""
-        params = (claim_no, policy_no, customer, incident, incident_date, loss, region, phone, json.dumps(required, ensure_ascii=False), json.dumps(received, ensure_ascii=False), json.dumps(missing, ensure_ascii=False), doc_status, status, score, "high" if score and score >= 0.62 else "medium" if score else None, fraud)
+        params = (claim_no, policy_no, customer, incident, incident_date, loss, region, phone, json.dumps(required, ensure_ascii=False), json.dumps(received, ensure_ascii=False), json.dumps(received, ensure_ascii=False), json.dumps(missing, ensure_ascii=False), doc_status, status, score, "high" if score and score >= 0.62 else "medium" if score else None, fraud)
         row = conn.execute(query, params).fetchone()
         if row is None:
             continue

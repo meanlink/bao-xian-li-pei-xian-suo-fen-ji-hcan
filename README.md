@@ -28,6 +28,14 @@ docker compose exec -T backend python scripts/seed_demo.py
 
 从队列进入「资料核验」勾选每件已经收到的材料。只收到一部分时，剩余缺项仍留在原期限，风险分级继续被阻断。全部核齐时，资料核验与补件回执在同一事务保存，案件退出补件队列并可由主管分级。在分级前纠正误勾的资料会重新进入队列，之前的回执保留。已经分级或进入后续流程的案件禁止将资料改回缺项。
 
+### 收件回执与催件批次
+
+补件可以分几次寄到，资料核验按「收件」追加记录，不再覆盖整份已收清单。每次收件有自己的收件号：同一收件号重试只会返回原回执，不会重复记收件；撤销后重试仍能查到原回执。两位受理员同时提交不同材料时各自生成独立收件记录，同一批催件下已核过的材料全部保留。
+
+每次收件都归属到某一批催件，补件调度和案件详情可以查到每次收件归属哪一批。收件日期早于当前批次联系日期时，收件按日期归入当时生效的旧批次：撤销误验并重新催件后，晚到记录仍归原批催件，不能抵扣新缺项。只有当前批次催收的材料全部核齐，案件才退出补件队列并允许分级。
+
+在风险分级前撤销误验：撤销该收件后材料重新计入缺项，同时作废当前批次的催件（需要重新登记催件），避免旧批收件抵消新缺项。已分级或进入后续流程的案件不能撤销。
+
 补件联系记录仅向受理员和风险主管开放。重复登记、过时的联系版本和过时的缺项清单会收到冲突提示。该工作台登记已发生的联系，实际电话、短信与邮件由经办人在线下完成。
 
 ## 线索证据复核
@@ -36,7 +44,7 @@ docker compose exec -T backend python scripts/seed_demo.py
 
 仅调查中或待核赔案件的待核查线索可提交证据。已提交但待复核或待补正的记录会阻止核赔结案，案件详情显示对应数量和入口。主管决定会更新线索状态，历史模型分数保留原值。
 
-后端启动时幂等创建复核表和补件跟进表，已有数据库卷可直接升级。重复运行演示 seed 会保留已经处理的理赔案件、线索和复核记录。
+后端启动时幂等创建复核表、补件跟进表与收件回执表，已有数据库卷可直接升级。重复运行演示 seed 会保留已经处理的理赔案件、线索和复核记录。
 
 ## 共享枚举
 
@@ -46,4 +54,4 @@ docker compose exec -T backend python scripts/seed_demo.py
 
 案件、风险与调查任务枚举在 `backend/src/constants/enums.py` 和 `frontend/src/utils/constants.js`。线索状态、凭证来源和复核状态用于 `backend/migrations/001_schema.sql`、`backend/migrations/002_clue_reviews.sql`、`backend/src/schemas/clue_reviews.py` 和 `frontend/src/utils/constants.js`。
 
-补件渠道 `phone / sms / email` 见 `backend/migrations/003_document_followups.sql`、`backend/src/schemas/claims.py` 与 `frontend/src/pages/documentTriage.js`。队列状态由 `backend/src/services/document_triage_service.py` 计算，前端负责展示与筛选。
+补件渠道 `phone / sms / email` 见 `backend/migrations/003_document_followups.sql`、`backend/src/schemas/claims.py` 与 `frontend/src/pages/documentTriage.js`。收件回执、催件批次与撤销见 `backend/migrations/004_document_receipts.sql`。队列状态由 `backend/src/services/document_triage_service.py` 计算，前端负责展示与筛选。

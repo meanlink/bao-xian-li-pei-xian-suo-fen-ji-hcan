@@ -17,6 +17,20 @@ class ClaimCreate(BaseModel):
 
 class DocumentVerify(BaseModel):
     received_documents: list[str]
+    received_on: date | None = None
+    receipt_no: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=3, max_length=64)] = None
+    followup_id: int | None = Field(default=None, gt=0)
+
+class DocumentReceiptCreate(BaseModel):
+    documents: list[str] = Field(min_length=1)
+    received_on: date
+    receipt_no: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=3, max_length=64)] = None
+    followup_id: int | None = Field(default=None, gt=0)
+
+
+class DocumentReceiptRevoke(BaseModel):
+    note: Annotated[str, StringConstraints(strip_whitespace=True, min_length=6, max_length=500)]
+
 
 class DocumentFollowupContact(BaseModel):
     channel: Literal["phone", "sms", "email"]

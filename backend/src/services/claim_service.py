@@ -1,22 +1,14 @@
-import json
-from datetime import date
 from src.services.logistic_model import score_claim, confusion_matrix, choose_threshold
 from src.services.clue_review_service import unresolved_review_count
-from src.services.document_triage_service import INTAKE_STATES, complete_followup, missing_documents
+from src.services.document_triage_service import (
+    INTAKE_STATES, _record_receipt_in_conn, auto_receipt_no, business_date,
+    compute_document_state,
+)
 from src.utils.audit import record, record_in_transaction
 from src.utils.db import get_conn
 from src.utils.redis_client import publish_event
+from src.utils.serialization import row_claim
 from src.config import MAX_FALSE_POSITIVE_RATE
-
-def row_claim(row):
-    if not row: return None
-    item = dict(row)
-    for key in ("required_documents", "received_documents", "missing_documents"):
-        if isinstance(item.get(key), str): item[key] = json.loads(item[key])
-    if item.get("loss_amount") is not None: item["loss_amount"] = float(item["loss_amount"])
-    if item.get("model_score") is not None: item["model_score"] = float(item["model_score"])
-    if item.get("model_threshold") is not None: item["model_threshold"] = float(item["model_threshold"])
-    return item
 
 def list_claims():
     with get_conn() as conn:
@@ -40,34 +32,61 @@ def get_tasks():
         rows = conn.execute("SELECT t.*, c.claim_no, c.customer_name, c.risk_level FROM investigation_tasks t JOIN claims c ON c.id=t.claim_id ORDER BY t.due_date ASC, t.id DESC").fetchall()
     return [dict(row) for row in rows]
 
-def verify_documents(claim_id, received, user_id):
+def verify_documents(claim_id, payload, user_id):
+    """Append a receipt for newly checked materials instead of overwriting the list.
+
+    Two intake agents verifying different materials at the same time each append
+    their own receipt, so everything already verified under the current batch is kept.
+    Unchecking a material is an explicit revocation and never happens implicitly here.
+    """
     with get_conn() as conn:
         claim = conn.execute("SELECT * FROM claims WHERE id=%s FOR UPDATE", (claim_id,)).fetchone()
         if not claim:
             raise ValueError("案件不存在")
-        missing = missing_documents(claim, received)
-        if missing and claim["status"] not in INTAKE_STATES:
+        if claim["status"] not in INTAKE_STATES:
             raise PermissionError("案件已进入风险分级或后续阶段，不能将资料改回缺项")
-        status = "missing" if missing else "complete"
-        next_status = "initial_review" if not missing and claim["status"] == "intake" else claim["status"]
-        row = conn.execute(
-            """UPDATE claims SET received_documents=%s, missing_documents=%s,
-                   documents_status=%s, status=%s, updated_at=now() WHERE id=%s RETURNING *""",
-            (json.dumps(received, ensure_ascii=False), json.dumps(missing, ensure_ascii=False), status, next_status, claim_id),
-        ).fetchone()
-        record_in_transaction(conn, user_id, "document_verified", claim_id, {"missing": missing, "documents_status": status})
-        if not missing:
-            complete_followup(conn, claim_id, user_id)
+        state = compute_document_state(conn, claim)
+        submitted = set(payload.received_documents)
+        required = set(claim["required_documents"])
+        if not submitted <= required:
+            raise ValueError("核验材料不在本案所需资料清单内")
+        # Only materials that are not already effective form a receipt.  Everything
+        # already verified under the current batch stays untouched, so concurrent
+        # submissions from two agents each keep their own material.
+        to_record = sorted(submitted - set(state["received_documents"]))
+        if not to_record:
+            return row_claim(claim)
+        # A material already received under an older batch is on the ledger.  It stays
+        # with that batch and cannot offset the current chase's missing items, so it is
+        # never re-recorded as a new receipt.
+        if set(to_record) <= set(state["received_ever"]):
+            raise PermissionError("该材料已按原批催件收件，不能抵扣当前缺项")
+        received_on = payload.received_on or business_date(conn)
+        # Content-derived so a retry with the same material set maps back to the same
+        # receipt, while two agents submitting different materials get distinct numbers.
+        # A revoked receipt with the same number means the material is being re-verified,
+        # so a fresh numbered receipt is issued instead of reviving the old one.
+        explicit_no = bool(payload.receipt_no)
+        receipt_no = payload.receipt_no or auto_receipt_no(claim, to_record, received_on)
+        row, _, _ = _record_receipt_in_conn(
+            conn, claim, to_record, received_on, receipt_no, payload.followup_id, user_id,
+            explicit_no=explicit_no,
+        )
     return row_claim(row)
+
 
 
 def model_claim(claim_id, user_id):
     with get_conn() as conn:
-        claim = row_claim(conn.execute("SELECT * FROM claims WHERE id=%s FOR UPDATE", (claim_id,)).fetchone())
+        claim = conn.execute("SELECT * FROM claims WHERE id=%s FOR UPDATE", (claim_id,)).fetchone()
         if not claim:
             raise ValueError("案件不存在")
-        if claim["documents_status"] != "complete" or missing_documents(claim):
+        # The receipt ledger is authoritative: a late receipt attributed to an older
+        # chase batch stays on record but does not clear the current batch's items.
+        state = compute_document_state(conn, claim)
+        if claim["documents_status"] != "complete" or state["missing_documents"]:
             raise PermissionError("资料缺项，不能进入模型分级")
+        claim = row_claim(claim)
         clues = conn.execute("SELECT * FROM risk_clues WHERE claim_id=%s", (claim_id,)).fetchall()
         score, features = score_claim(claim, clues)
         threshold = float(conn.execute("SELECT value FROM settings WHERE key='model_threshold'").fetchone()["value"])

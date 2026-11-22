@@ -11,7 +11,7 @@ async def lifespan(app):
     migrations = Path(__file__).resolve().parents[1] / "migrations"
     with get_conn() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(1045002)")
-        for name in ("002_clue_reviews.sql", "003_document_followups.sql"):
+        for name in ("002_clue_reviews.sql", "003_document_followups.sql", "004_document_receipts.sql"):
             conn.execute((migrations / name).read_text(encoding="utf-8"))
     yield
 
